@@ -333,111 +333,120 @@ type Hike = {
 
 export default function Home() {
   const [data, setData] = useState<Hike[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState("");
   const [botResponse, setBotResponse] = useState("");
   const [parent] = useAutoAnimate();
 
-
-  const attemptFetchHikes = async () => {
-    let totalPages = 1;
-    let allData: Hike[] = [];
-    const res = await (await fetch(`https://tourism.opendatahub.com/v1/ODHActivityPoi?language=en&pagenumber=1&type=255&source=idm&active=false&tagfilter=hiking&fields=Type&fields=Detail&fields=GpsInfo&fields=Ratings&fields=Shortname&fields=ImageGallery&fields=IsWithLigth&fields=LocationInfo&fields=DistanceLength&fields=HasFreeEntrance&removenullvalues=true&getasidarray=false`)).json();
-    allData = res.Items || [];
-    totalPages = res.TotalPages;
-    for (let i = 2; i <= totalPages; i++) {
-      const res = await (await fetch(`https://tourism.opendatahub.com/v1/ODHActivityPoi?language=en&pagenumber=${i}&type=255&source=idm&active=false&tagfilter=hiking&fields=Type&fields=Detail&fields=GpsInfo&fields=Ratings&fields=Shortname&fields=ImageGallery&fields=IsWithLigth&fields=LocationInfo&fields=DistanceLength&fields=HasFreeEntrance&removenullvalues=true&getasidarray=false`)).json();
-      allData = [...allData, ...(res.Items || [])];
-    }
-    setData(allData);
-  };
-
-  useEffect(() => {
-    attemptFetchHikes();
-  }, []);
-
-
   const onUserCompletitionRequest = async (form: FormData) => {
-    setLoading(true);
-    const promptInstructions = "Act as a hiking assistant. Use the provided hiking data to offer recommendations or insights. Only suggest hikes explicitly present in the data. Avoid mentioning the data source or asking follow-up questions.";
+    // Function to actually get data from the Open Data Hub, take into account the user request's language.
+    const attemptFetchHikes = async (lang: string) => {
+      setLoading("Contacting the ODH...")
+      let totalPages = 1;
+      let allData: Hike[] = [];
+      const res = await (await fetch(`https://tourism.opendatahub.com/v1/ODHActivityPoi?language=${lang}&pagenumber=1&type=255&source=idm&active=false&tagfilter=hiking&fields=Type&fields=Detail&fields=GpsInfo&fields=Ratings&fields=Shortname&fields=ImageGallery&fields=IsWithLigth&fields=LocationInfo&fields=DistanceLength&fields=HasFreeEntrance&removenullvalues=true&getasidarray=false`)).json();
+      allData = res.Items || [];
+      totalPages = res.TotalPages;
+      for (let i = 2; i <= totalPages; i++) {
+        const res = await (await fetch(`https://tourism.opendatahub.com/v1/ODHActivityPoi?language=${lang}&pagenumber=${i}&type=255&source=idm&active=false&tagfilter=hiking&fields=Type&fields=Detail&fields=GpsInfo&fields=Ratings&fields=Shortname&fields=ImageGallery&fields=IsWithLigth&fields=LocationInfo&fields=DistanceLength&fields=HasFreeEntrance&removenullvalues=true&getasidarray=false`)).json();
+        allData = [...allData, ...(res.Items || [])];
+      }
+      setData(allData);
+    };
 
-    const response = await fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama3.1",
-        prompt: `${promptInstructions} Here is the hiking data: ${JSON.stringify(data)}. User input: ${form.get("user-input")?.toString()}`,
-        stream: true,
-      }),
-    });
-
-    if (!response.body) {
-      console.error("No response body");
-      return;
+    // Get the user request advice
+    const getRequestLanguage = async () => {
+      setLoading("Understanding the language...");
+      const promptInstructions = "Your task is to determine the language of the user's input and respond with the corresponding ISO 639-1 language code (e.g., 'en' for English, 'it' for Italian). Provide only the language code as the response. Reply only with the 2 letters and nothing else.";
+      const response = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama3.1",
+          prompt: `${promptInstructions} User input: ${form.get("user-input")?.toString()}`,
+          stream: false,
+        }),
+      });
+      if (!response.body) {
+        console.error("No response body");
+        return;
+      }
+      return (await response.json()).response;
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let done = false;
-    let botResponseText = "";
-
-    while (!done) {
-      const { value, done: readerDone } = await reader.read();
-      done = readerDone;
-      if (done) {
-        setLoading(false);
+    // Get the final assistant advice
+    const getAssistantAdvice = async () => {
+      setLoading("Creating advice...")
+      const promptInstructions = "Act as a hiking assistant. Use the provided hiking data to offer recommendations or insights. Only suggest hikes explicitly present in the data. Avoid mentioning the data source or asking follow-up questions.";
+      const response = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "llama3.1",
+          prompt: `${promptInstructions} Here is the hiking data: ${JSON.stringify(data)}. User input: ${form.get("user-input")?.toString()}`,
+          stream: true,
+        }),
+      });
+      if (!response.body) {
+        console.error("No response body");
+        return;
       }
-      if (value) {
-        const decodedValue = decoder.decode(value);
-        try {
-          const jsonValue = JSON.parse(decodedValue);
-          const chunk = jsonValue.response;
-          botResponseText += chunk;
-          setBotResponse(botResponseText);
-        } catch (error) {
-          console.log("Error parsing JSON:", error);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let done = false;
+      let botResponseText = "";
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
+        if (done) {
+          setLoading("");
+        }
+        if (value) {
+          const decodedValue = decoder.decode(value);
+          try {
+            const jsonValue = JSON.parse(decodedValue);
+            const chunk = jsonValue.response;
+            botResponseText += chunk;
+            setBotResponse(botResponseText);
+          } catch (error) {
+            console.log("Error parsing JSON:", error);
+          }
         }
       }
     }
+
+    const language = await getRequestLanguage();
+    await attemptFetchHikes(language);
+    await getAssistantAdvice();
   };
 
   return (
     <div ref={parent} className="h-screen flex items-center justify-center flex-col gap-4">
-      {data.length === 0 ? (
-        <div className="h-screen flex items-center justify-center flex-col gap-4">
-          <div className="flex items-center shadow gap-2.5 bg-neutral-100 border border-neutral-300 p-4 rounded-md">
-            <Loader className="animate-spin" size={20} />
-            <p className="text-sm">Gathering data from the ODH</p>
+      {botResponse ? (
+        <div key={"bot-response"} className="bg-neutral-900 shadow w-[700px] rounded-md p-2 border border-neutral-500">
+          <div className="flex items-center mb-2 gap-1 text-white">
+            <Bot size={20}></Bot>
+            <p className="text-sm">Chatbot Response</p>
+          </div>
+          <div className="w-full bg-neutral-800 text-white rounded-sm p-2 max-h-[500px] overflow-y-auto">
+            <Markdown>{botResponse}
+            </Markdown>
           </div>
         </div>
-      ) : (
-        <>
-          {botResponse && (
-            <div className="bg-neutral-900 shadow w-[700px] rounded-md p-2 border border-neutral-500">
-              <div className="flex items-center mb-2 gap-1 text-white">
-                <Bot size={20}></Bot>
-                <p className="text-sm">Chatbot Response</p>
-              </div>
-              <div className="w-full bg-neutral-800 text-white rounded-sm p-2 max-h-[500px] overflow-y-auto">
-                <Markdown>{botResponse}
-                </Markdown>
-              </div>
-            </div>
-          )}
-          <form onSubmit={(e) => {
-            e.preventDefault();
-            onUserCompletitionRequest(new FormData(e.currentTarget));
-          }}>
-            <div className="flex relative flex-col items-end">
-              <Textarea name="user-input" className="w-[700px] h-[200px] bg-white shadow resize-none">
-              </Textarea>
-              <Button className="absolute bottom-4 right-4">{loading ? <Loader className="animate-spin" /> : <Send />}</Button>
-            </div>
-          </form>
-        </>
-      )}
-
+      ) : <div key={"logo"} className="flex flex-col items-center justify-center mb-10"><p className="text-4xl font-semibold">AI Hiking Assistant</p><span className="text-sm opacity-60 mt-2">Powered by the <a href="https://opendatahub.com/" className="underline" target="_blank">Open Data Hub</a></span></div>}
+      <form onSubmit={(e) => {
+        e.preventDefault();
+        onUserCompletitionRequest(new FormData(e.currentTarget));
+      }}>
+        <div className="flex relative flex-col items-end">
+          <Textarea name="user-input" placeholder="Ask me anything about hikes..." className="w-[700px] h-[200px] bg-white shadow resize-none">
+          </Textarea>
+          <Button className="absolute bottom-4 right-4">{loading ? <>{loading}<Loader className="animate-spin" /></> : <Send />}</Button>
+        </div>
+      </form>
     </div>
   );
 }
